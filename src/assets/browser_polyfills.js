@@ -88,7 +88,8 @@
       artwork: metadata.artwork || '',
       playing: !!(media && !media.paused),
       liked: !!metadata.liked,
-      repeatMode: metadata.repeatMode || ''
+      repeatMode: metadata.repeatMode || '',
+      muted: !!metadata.muted
     });
   };
 
@@ -103,14 +104,20 @@
     return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
   }
 
+  function miniBarRoot() {
+    return document.querySelector('#page_pc_mini_bar');
+  }
+
   function playerControlsRoot() {
-    const play = document.querySelector('#btn_pc_minibar_play');
-    if (!play) return null;
-    return play.closest('footer, .page-footer, .cmd-space, [class*=footer], [class*=bar]') || play.parentElement;
+    return document.querySelector('#page_pc_mini_bar .middle .btns');
+  }
+
+  function hasMiniBar() {
+    return !!document.querySelector('#page_pc_mini_bar');
   }
 
   function controlsRoot() {
-    return playerControlsRoot() || document;
+    return miniBarRoot() || document;
   }
 
   function controlNodes(root) {
@@ -134,41 +141,14 @@
     return null;
   }
 
-  function findLikeControl(root) {
+  function findLikeControl() {
+    const root = playerControlsRoot();
     if (!root) return null;
-    const play = document.querySelector('#btn_pc_minibar_play');
-    const playRect = play && play.getBoundingClientRect && play.getBoundingClientRect();
-    const selectors = '.cmd-icon-like, .cmd-icon[aria-label="like"], .cmd-icon[title="喜欢"], .cmd-icon[title="取消喜欢"]';
-    const candidates = [];
-
-    for (const icon of Array.from(root.querySelectorAll(selectors)).filter(visibleNode)) {
-      const button = icon.closest('button, [role="button"]') || icon;
-      if (button.closest('#page_pc_main_nav, nav, aside')) continue;
-      const rect = icon.getBoundingClientRect();
-      const dist = playRect ? Math.hypot(rect.left - playRect.left, rect.top - playRect.top) : 0;
-      const looksMiniBar = button.classList && (button.classList.contains('cmd-button-with-icon-only') || button.classList.contains('cmd-button-surfacePri'));
-      candidates.push({
-        node: button,
-        icon,
-        label: controlLabel(button) + ' ' + controlLabel(icon),
-        title: icon.getAttribute('title') || '',
-        dist,
-        looksMiniBar,
-      });
-    }
-
-    candidates.sort((a, b) => {
-      // State title is not a selector priority: an old/offscreen/other like
-      // button may also say "取消喜欢". The current-song button is the mini-bar
-      // heart closest to #btn_pc_minibar_play.
-      if (a.looksMiniBar !== b.looksMiniBar) return a.looksMiniBar ? -1 : 1;
-      return a.dist - b.dist;
-    });
-    return candidates[0] || null;
-  }
-
-  function findLikeControlAnywhere() {
-    return findLikeControl(playerControlsRoot()) || findLikeControl(document);
+    const icon = root.querySelector('.cmd-icon-like[aria-label="like"][title="喜欢"], .cmd-icon-like[aria-label="like"][title="取消喜欢"]');
+    if (!icon || !visibleNode(icon)) return null;
+    const button = icon.closest('button');
+    if (!button || !visibleNode(button)) return null;
+    return { node: button, icon, label: controlLabel(button) + ' ' + controlLabel(icon), title: icon.getAttribute('title') || '' };
   }
 
 
@@ -188,123 +168,43 @@
     return true;
   }
 
-  function isRedLikeColor(value) {
-    const m = String(value || '').match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
-    if (!m) return false;
-    const r = Number(m[1]), g = Number(m[2]), b = Number(m[3]);
-    return r >= 160 && g <= 120 && b <= 140;
-  }
-
   function activeLikeState(found) {
     if (!found) return false;
-    const icon = found.icon || found.node;
-    const label = found.label;
-    const title = icon.getAttribute('title') || '';
-
-    // For NetEase mini-bar this is the most reliable state marker:
-    // unliked => title="喜欢", liked => title="取消喜欢".
-    if (title === '取消喜欢') return true;
-    if (title === '喜欢') return false;
-
-    if (/已喜欢|unlike|liked/i.test(label)) return true;
-    if (/添加喜欢|未喜欢/i.test(label)) return false;
-
-    const iconStyle = getComputedStyle(icon);
-    const buttonStyle = getComputedStyle(found.node);
-    if (isRedLikeColor(iconStyle.color) || isRedLikeColor(iconStyle.fill) || isRedLikeColor(buttonStyle.color)) return true;
-
-    const attrs = [
-      icon.getAttribute('aria-pressed'),
-      icon.getAttribute('aria-selected'),
-      icon.getAttribute('data-checked'),
-      icon.getAttribute('data-liked'),
-      found.node.getAttribute('aria-pressed'),
-      found.node.getAttribute('aria-selected'),
-      found.node.getAttribute('data-checked'),
-      found.node.getAttribute('data-liked'),
-    ].filter(Boolean).join(' ');
-    if (/true|1|yes/i.test(attrs)) return true;
-    if (/false|0|no/i.test(attrs)) return false;
-
-    const klass = String(icon.className || '') + ' ' + String(found.node.className || '');
-    if (/liked|like-fill|likeFill|filled|active|checked|selected|z-sel|is-?liked|on/i.test(klass)) return true;
-
-    // The mini bar like icon is an SVG.  In the unliked state the root SVG from
-    // NetEase is `fill="none"`; the liked state is rendered as a filled heart
-    // by setting fill on the svg/path/use.  Inspect descendants instead of the
-    // wrapper label, otherwise `aria-label="like"` would always look unliked.
-    const svg = icon.querySelector && icon.querySelector('svg');
-    if (svg) {
-      const rootFill = svg.getAttribute('fill');
-      const filledChild = Array.from(svg.querySelectorAll('path, use, polygon, circle')).some((child) => {
-        const attrFill = child.getAttribute('fill');
-        const attrClass = String(child.getAttribute('class') || '');
-        if (attrFill && attrFill !== 'none' && attrFill !== 'transparent') return true;
-        if (/fill|filled|active|liked/i.test(attrClass)) return true;
-        const childStyle = getComputedStyle(child);
-        const styleFill = childStyle.fill;
-        return isRedLikeColor(styleFill) || isRedLikeColor(childStyle.color);
-      });
-      if (filledChild) return true;
-      if (rootFill && rootFill !== 'none' && rootFill !== 'transparent') return true;
-      return false;
-    }
-
-    return false;
+    return found.title === '取消喜欢';
   }
 
-  function findRepeatControlAnywhere() {
-    const selectors = [
-      '.cmd-icon-singleloop',
-      '.cmd-icon-listloop',
-      '.cmd-icon-orderplay',
-      '.cmd-icon-randomplay',
-      '.cmd-icon-shuffle',
-      '.cmd-icon-heartmode',
-      '.cmd-icon[aria-label*="loop" i]',
-      '.cmd-icon[aria-label*="random" i]',
-      '.cmd-icon[aria-label*="shuffle" i]',
-      '.cmd-icon[title*="循环"]',
-      '.cmd-icon[title*="随机"]',
-      '.cmd-icon[title*="顺序"]',
-      '.cmd-icon[title*="心动"]',
-    ].join(',');
-
-    const play = document.querySelector('#btn_pc_minibar_play');
-    const playRect = play && play.getBoundingClientRect && play.getBoundingClientRect();
-    const candidates = [];
-    for (const icon of Array.from(document.querySelectorAll(selectors)).filter(visibleNode)) {
-      const button = icon.closest('button, [role="button"]') || icon;
-      if (button.closest('#page_pc_main_nav, nav, aside')) continue;
-      const rect = icon.getBoundingClientRect();
-      candidates.push({
-        node: button,
-        icon,
-        label: controlLabel(button) + ' ' + controlLabel(icon),
-        title: icon.getAttribute('title') || '',
-        ariaLabel: icon.getAttribute('aria-label') || '',
-        className: String(icon.className || ''),
-        distanceToPlay: playRect ? Math.hypot(rect.left - playRect.left, rect.top - playRect.top) : 0,
-      });
-    }
-    candidates.sort((a, b) => a.distanceToPlay - b.distanceToPlay);
-    return candidates[0] || null;
+  function findRepeatControl() {
+    const root = playerControlsRoot();
+    if (!root) return null;
+    const icon = root.querySelector('.cmd-icon[title="随机播放"], .cmd-icon[title="顺序播放"], .cmd-icon[title="心动模式"], .cmd-icon[title="列表循环"], .cmd-icon[title="单曲循环"]');
+    if (!icon || !visibleNode(icon)) return null;
+    const button = icon.closest('button');
+    if (!button || !visibleNode(button)) return null;
+    return { node: button, icon, title: icon.getAttribute('title') || '' };
   }
 
   function readRepeatMode(found) {
     if (!found) return '';
-    const label = [found.title, found.ariaLabel, found.className, found.label].join(' ');
-    if (/心动/i.test(label)) return '心动模式';
-    if (/单曲|singleloop|single|one/i.test(label)) return '单曲循环';
-    if (/随机|random|shuffle/i.test(label)) return '随机播放';
-    if (/顺序|order|sequence/i.test(label)) return '顺序播放';
-    if (/列表|listloop|循环|repeat|loop/i.test(label)) return '列表循环';
-    return '';
+    return found.title;
+  }
+
+  function findMuteControl() {
+    const root = miniBarRoot();
+    if (!root) return null;
+    const icon = root.querySelector('.right-side .cmd-icon-volume[aria-label="volume"][title="静音"], .right-side .cmd-icon-mute[aria-label="mute"][title="解除静音"]');
+    if (!icon) return null;
+    const button = icon.closest('button');
+    if (!button) return null;
+    return { node: button, icon, title: icon.getAttribute('title') || '' };
+  }
+
+  function activeMutedState(found) {
+    return !!found && found.title === '解除静音';
   }
 
   function collectNowPlayingFromThisFrame() {
     const meta = globalThis.__neteaseNowPlaying || (navigator.mediaSession && navigator.mediaSession.metadata) || {};
-    const play = document.querySelector('#btn_pc_minibar_play');
+    const play = document.querySelector('#page_pc_mini_bar #btn_pc_minibar_play');
     const root = controlsRoot();
     function textOf(selector) {
       const node = root.querySelector(selector);
@@ -320,10 +220,12 @@
     const artwork = (meta.artwork && meta.artwork[0] && meta.artwork[0].src) || attrOf('img[src]', 'src');
     const media = currentMedia();
     const playing = !!(media && !media.paused);
-    const likeControl = findLikeControlAnywhere();
-    const repeatControl = findRepeatControlAnywhere();
+    const likeControl = findLikeControl();
+    const repeatControl = findRepeatControl();
+    const muteControl = findMuteControl();
     const liked = activeLikeState(likeControl);
     const repeatMode = readRepeatMode(repeatControl);
+    const muted = activeMutedState(muteControl);
 
     if (!title && play) {
       const bad = /播放|暂停|上一|下一|喜欢|收藏|列表|歌词|音量|循环|随机|prev|next|play|pause|volume/i;
@@ -337,7 +239,7 @@
       artist = artist || texts[1] || '';
     }
 
-    return { title, artist, album, artwork, playing, liked, repeatMode };
+    return { title, artist, album, artwork, playing, liked, repeatMode, muted };
   }
 
   function sendNowPlaying(info) {
@@ -372,6 +274,7 @@
     setInterval(publishNowPlaying, 1000);
     document.addEventListener('play', publishNowPlaying, true);
     document.addEventListener('pause', publishNowPlaying, true);
+    document.addEventListener('volumechange', publishNowPlaying, true);
     document.addEventListener('click', function () { setTimeout(publishNowPlaying, 100); }, true);
     let mutationTimer = 0;
     new MutationObserver(function () {
@@ -388,11 +291,10 @@
   }
 
   function playerButton(offset) {
-    const play = document.querySelector('#btn_pc_minibar_play');
+    const controls = playerControlsRoot();
+    const play = controls && controls.querySelector('#btn_pc_minibar_play');
     if (!play) return null;
-    const controls = play.closest('.cmd-space, footer, .page-footer') || play.parentElement;
-    if (!controls) return null;
-    const buttons = Array.from(controls.querySelectorAll('button, [role="button"], a'));
+    const buttons = Array.from(controls.querySelectorAll('button'));
     const index = buttons.indexOf(play);
     if (index < 0) return null;
     return buttons[index + offset] || null;
@@ -407,7 +309,7 @@
   function playOnly() {
     const media = currentMedia();
     if (media && !media.paused) return true;
-    const button = document.querySelector('#btn_pc_minibar_play');
+    const button = document.querySelector('#page_pc_mini_bar #btn_pc_minibar_play');
     if (button) {
       button.click();
       refreshSoon();
@@ -420,7 +322,7 @@
   }
 
   function playPause() {
-    const button = document.querySelector('#btn_pc_minibar_play');
+    const button = document.querySelector('#page_pc_mini_bar #btn_pc_minibar_play');
     if (button) {
       button.click();
       refreshSoon();
@@ -434,7 +336,7 @@
   }
 
   function clickControl(patterns) {
-    const found = findControl(patterns, controlsRoot()) || findControl(patterns, document);
+    const found = findControl(patterns, playerControlsRoot());
     if (!found) return false;
     found.node.click();
     setTimeout(publishNowPlaying, 150);
@@ -444,7 +346,7 @@
   const repeatOrder = ['随机播放', '顺序播放', '心动模式', '列表循环', '单曲循环'];
 
   function cycleRepeatButton() {
-    const found = findRepeatControlAnywhere();
+    const found = findRepeatControl();
     if (!found) return false;
     found.node.click();
     refreshSoon();
@@ -453,7 +355,7 @@
 
   function setRepeatMode(target) {
     if (!repeatOrder.includes(target)) return false;
-    const found = findRepeatControlAnywhere();
+    const found = findRepeatControl();
     const current = readRepeatMode(found);
     const from = repeatOrder.indexOf(current);
     const to = repeatOrder.indexOf(target);
@@ -467,21 +369,45 @@
     return true;
   }
 
-  // Some web apps disable the browser context menu. Stop their handlers
-  // from seeing right-click, but do not prevent the browser/WebKit default.
-  document.addEventListener('contextmenu', function (event) {
-    event.stopImmediatePropagation();
-  }, true);
+  function dispatchControlClick(node) {
+    if (!node) return;
+    if (globalThis.PointerEvent) {
+      node.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 1, button: 0 }));
+    } else {
+      node.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true, view: window, buttons: 1, button: 0 }));
+    }
+    node.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, buttons: 1, button: 0 }));
+    if (globalThis.PointerEvent) {
+      node.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 0, button: 0 }));
+    } else {
+      node.dispatchEvent(new MouseEvent('pointerup', { bubbles: true, cancelable: true, view: window, buttons: 0, button: 0 }));
+    }
+    node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, buttons: 0, button: 0 }));
+    node.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, buttons: 0, button: 0 }));
+  }
+
+  function toggleMute() {
+    const found = findMuteControl();
+    if (!found) return false;
+    dispatchControlClick(found.node);
+    refreshSoon();
+    return true;
+  }
+
 
   globalThis.__neteaseTrayAction = function (action, value) {
+    if (!hasMiniBar()) {
+      return action === 'showWindow';
+    }
     if (action === 'play') return playOnly();
     if (action === 'playPause') return playPause();
-    if (action === 'previous') { const button = playerButton(-1); if (button) { button.click(); refreshSoon(); return true; } return clickControl([/上一/, /prev/i, /previous/i]); }
-    if (action === 'next') { const button = playerButton(1); if (button) { button.click(); refreshSoon(); return true; } return clickControl([/下一/, /next/i]); }
+    if (action === 'previous') { const button = playerButton(-1); if (button) { button.click(); refreshSoon(); return true; } return false; }
+    if (action === 'next') { const button = playerButton(1); if (button) { button.click(); refreshSoon(); return true; } return false; }
     if (action === 'toggleLike') {
-      return clickLikeControl(findLikeControlAnywhere());
+      return clickLikeControl(findLikeControl());
     }
     if (action === 'setRepeatMode') return setRepeatMode(value);
+    if (action === 'toggleMute') return toggleMute();
     return false;
   };
 
@@ -493,12 +419,12 @@
     else if (event.key === 'ArrowUp') {
       const button = playerButton(-1);
       if (button) { button.click(); handled = true; }
-      else handled = clickControl([/上一/, /prev/i, /previous/i]);
+      else handled = false;
     }
     else if (event.key === 'ArrowDown') {
       const button = playerButton(1);
       if (button) { button.click(); handled = true; }
-      else handled = clickControl([/下一/, /next/i]);
+      else handled = false;
     }
 
     if (handled) {

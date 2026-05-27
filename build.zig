@@ -89,6 +89,7 @@ pub fn build(b: *std.Build) void {
     });
 
     exe_mod.addImport("gtk", gobject.module("gtk4"));
+    exe_mod.addImport("gdk", gobject.module("gdk4"));
     exe_mod.addImport("glib", gobject.module("glib2"));
     exe_mod.addImport("gio", gobject.module("gio2"));
     exe_mod.addImport("gobject", gobject.module("gobject2"));

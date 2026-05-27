@@ -1,5 +1,6 @@
 const std = @import("std");
 const gtk = @import("gtk");
+const gdk = @import("gdk");
 const glib = @import("glib");
 const webkit = @import("webkit");
 const goose = @import("goose");
@@ -27,6 +28,7 @@ const TrayAction = enum(usize) {
     previous = 3,
     next = 4,
     toggle_like = 5,
+    toggle_mute = 6,
     repeat_random = 7,
     repeat_order = 8,
     repeat_heart = 9,
@@ -70,6 +72,7 @@ var now_playing_label_buf: [512:0]u8 = [_:0]u8{0} ** 512;
 var now_playing_label_len: usize = 1;
 var now_playing_is_playing: ?bool = null;
 var now_playing_liked: ?bool = null;
+var now_playing_muted: ?bool = null;
 var now_playing_repeat_mode_buf: [64:0]u8 = [_:0]u8{0} ** 64;
 var now_playing_repeat_mode_len: usize = 0;
 var now_playing_label_prop = [_]PropEntry{
@@ -104,6 +107,13 @@ var menu_props_like = [_]PropEntry{
     .{ .key = GStr.new("type"), .value = PropVariant.new(.{ .type = GStr.new("standard") }) },
     .{ .key = GStr.new("label"), .value = PropVariant.new(.{ .label = GStr.new("添加喜欢") }) },
     .{ .key = GStr.new("icon-name"), .value = PropVariant.new(.{ .icon_name = GStr.new("love") }) },
+    .{ .key = GStr.new("enabled"), .value = PropVariant.new(.{ .enabled = true }) },
+    .{ .key = GStr.new("visible"), .value = PropVariant.new(.{ .visible = true }) },
+};
+var menu_props_mute = [_]PropEntry{
+    .{ .key = GStr.new("type"), .value = PropVariant.new(.{ .type = GStr.new("standard") }) },
+    .{ .key = GStr.new("label"), .value = PropVariant.new(.{ .label = GStr.new("静音") }) },
+    .{ .key = GStr.new("icon-name"), .value = PropVariant.new(.{ .icon_name = GStr.new("audio-volume-muted-symbolic") }) },
     .{ .key = GStr.new("enabled"), .value = PropVariant.new(.{ .enabled = true }) },
     .{ .key = GStr.new("visible"), .value = PropVariant.new(.{ .visible = true }) },
 };
@@ -177,7 +187,7 @@ var tray_icon_argb: []u8 = &.{};
 var tray_icon_pixmap_storage: [1]Pixmap = undefined;
 var tray_icon_pixmaps: []const Pixmap = &empty_pixmaps;
 
-const root_child_ids = [_]i32{ 100, 1, 2, 3, 4, 5, 11, 12 };
+const root_child_ids = [_]i32{ 100, 1, 2, 3, 4, 13, 5, 11, 12 };
 const repeat_child_ids = [_]i32{ 6, 7, 8, 9, 10 };
 const no_child_ids = [_]i32{};
 
@@ -214,6 +224,7 @@ fn menuLayoutById(id: i32) MenuLayout {
         2 => .{ .id = 2, .props = &menu_props_previous, .child_ids = &no_child_ids },
         3 => .{ .id = 3, .props = &menu_props_next, .child_ids = &no_child_ids },
         4 => .{ .id = 4, .props = &menu_props_like, .child_ids = &no_child_ids },
+        13 => .{ .id = 13, .props = &menu_props_mute, .child_ids = &no_child_ids },
         5 => .{ .id = 5, .props = &menu_props_repeat, .child_ids = &repeat_child_ids },
         6 => .{ .id = 6, .props = &menu_props_repeat_random, .child_ids = &no_child_ids },
         7 => .{ .id = 7, .props = &menu_props_repeat_order, .child_ids = &no_child_ids },
@@ -232,6 +243,7 @@ const menu_group_props = [_]GroupProp{
     .{ .id = 2, .props = PropDict.new(&menu_props_previous) },
     .{ .id = 3, .props = PropDict.new(&menu_props_next) },
     .{ .id = 4, .props = PropDict.new(&menu_props_like) },
+    .{ .id = 13, .props = PropDict.new(&menu_props_mute) },
     .{ .id = 5, .props = PropDict.new(&menu_props_repeat) },
     .{ .id = 6, .props = PropDict.new(&menu_props_repeat_random) },
     .{ .id = 7, .props = PropDict.new(&menu_props_repeat_order) },
@@ -258,15 +270,16 @@ fn onTrayAction(data: ?*anyopaque) callconv(.c) c_int {
             window.as(gtk.Widget).show();
             window.present();
         },
-        .play_pause => evalPlayerScriptHidden("window.__neteaseTrayAction && window.__neteaseTrayAction('playPause')"),
-        .previous => evalPlayerScriptHidden("window.__neteaseTrayAction && window.__neteaseTrayAction('previous')"),
-        .next => evalPlayerScriptHidden("window.__neteaseTrayAction && window.__neteaseTrayAction('next')"),
-        .toggle_like => evalPlayerScriptHidden("window.__neteaseTrayAction && window.__neteaseTrayAction('toggleLike')"),
-        .repeat_random => evalPlayerScriptHidden("window.__neteaseTrayAction && window.__neteaseTrayAction('setRepeatMode', '随机播放')"),
-        .repeat_order => evalPlayerScriptHidden("window.__neteaseTrayAction && window.__neteaseTrayAction('setRepeatMode', '顺序播放')"),
-        .repeat_heart => evalPlayerScriptHidden("window.__neteaseTrayAction && window.__neteaseTrayAction('setRepeatMode', '心动模式')"),
-        .repeat_list => evalPlayerScriptHidden("window.__neteaseTrayAction && window.__neteaseTrayAction('setRepeatMode', '列表循环')"),
-        .repeat_single => evalPlayerScriptHidden("window.__neteaseTrayAction && window.__neteaseTrayAction('setRepeatMode', '单曲循环')"),
+        .play_pause => evalPlayerScriptOrShowOnMissingBar("window.__neteaseTrayAction ? window.__neteaseTrayAction('playPause') : false", &show_on_missing_bar_contexts[0]),
+        .previous => evalPlayerScriptOrShowOnMissingBar("window.__neteaseTrayAction ? window.__neteaseTrayAction('previous') : false", &show_on_missing_bar_contexts[1]),
+        .next => evalPlayerScriptOrShowOnMissingBar("window.__neteaseTrayAction ? window.__neteaseTrayAction('next') : false", &show_on_missing_bar_contexts[2]),
+        .toggle_like => evalPlayerScriptOrShowOnMissingBar("window.__neteaseTrayAction ? window.__neteaseTrayAction('toggleLike') : false", &show_on_missing_bar_contexts[3]),
+        .toggle_mute => evalPlayerScriptOrShowOnMissingBar("window.__neteaseTrayAction ? window.__neteaseTrayAction('toggleMute') : false", &show_on_missing_bar_contexts[4]),
+        .repeat_random => evalPlayerScriptOrShowOnMissingBar("window.__neteaseTrayAction ? window.__neteaseTrayAction('setRepeatMode', '随机播放') : false", &show_on_missing_bar_contexts[5]),
+        .repeat_order => evalPlayerScriptOrShowOnMissingBar("window.__neteaseTrayAction ? window.__neteaseTrayAction('setRepeatMode', '顺序播放') : false", &show_on_missing_bar_contexts[6]),
+        .repeat_heart => evalPlayerScriptOrShowOnMissingBar("window.__neteaseTrayAction ? window.__neteaseTrayAction('setRepeatMode', '心动模式') : false", &show_on_missing_bar_contexts[7]),
+        .repeat_list => evalPlayerScriptOrShowOnMissingBar("window.__neteaseTrayAction ? window.__neteaseTrayAction('setRepeatMode', '列表循环') : false", &show_on_missing_bar_contexts[8]),
+        .repeat_single => evalPlayerScriptOrShowOnMissingBar("window.__neteaseTrayAction ? window.__neteaseTrayAction('setRepeatMode', '单曲循环') : false", &show_on_missing_bar_contexts[9]),
         .refresh_now_playing => evalPlayerScriptHidden("window.__neteasePublishNowPlaying && window.__neteasePublishNowPlaying()"),
         .quit => if (main_window) |existing_window| existing_window.as(gtk.Window).destroy(),
     }
@@ -284,6 +297,52 @@ fn evalPlayerScript(script: [:0]const u8) void {
 fn evalPlayerScriptHidden(script: [:0]const u8) void {
     if (current_web_view) |view| {
         view.evaluateJavascript(script, -1, null, null, null, null, null);
+    }
+}
+
+const ShowOnMissingBarContext = struct {
+    user_script: [:0]const u8,
+};
+
+const show_on_missing_bar_contexts = [_]ShowOnMissingBarContext{
+    .{ .user_script = "window.__neteaseTrayAction && window.__neteaseTrayAction('playPause')" },
+    .{ .user_script = "window.__neteaseTrayAction && window.__neteaseTrayAction('previous')" },
+    .{ .user_script = "window.__neteaseTrayAction && window.__neteaseTrayAction('next')" },
+    .{ .user_script = "window.__neteaseTrayAction && window.__neteaseTrayAction('toggleLike')" },
+    .{ .user_script = "window.__neteaseTrayAction && window.__neteaseTrayAction('toggleMute')" },
+    .{ .user_script = "window.__neteaseTrayAction && window.__neteaseTrayAction('setRepeatMode', '随机播放')" },
+    .{ .user_script = "window.__neteaseTrayAction && window.__neteaseTrayAction('setRepeatMode', '顺序播放')" },
+    .{ .user_script = "window.__neteaseTrayAction && window.__neteaseTrayAction('setRepeatMode', '心动模式')" },
+    .{ .user_script = "window.__neteaseTrayAction && window.__neteaseTrayAction('setRepeatMode', '列表循环')" },
+    .{ .user_script = "window.__neteaseTrayAction && window.__neteaseTrayAction('setRepeatMode', '单曲循环')" },
+};
+
+fn evalPlayerScriptOrShowOnMissingBar(script: [:0]const u8, context: *const ShowOnMissingBarContext) void {
+    if (current_web_view) |view| {
+        view.evaluateJavascript(script, -1, null, null, null, onTrayActionJavascript, @constCast(context));
+    }
+}
+
+fn onTrayActionJavascript(source: ?*gobject.Object, result: *gio.AsyncResult, data: ?*anyopaque) callconv(.c) void {
+    const view: *webkit.WebView = @ptrCast(@alignCast(source.?));
+    var err: ?*glib.Error = null;
+    const value = view.evaluateJavascriptFinish(result, &err) orelse {
+        if (err) |e| e.free();
+        return;
+    };
+    defer value.unref();
+    if (err) |e| {
+        e.free();
+        return;
+    }
+    const handled = value.toBoolean();
+    if (handled != 0) return;
+
+    _ = data;
+    if (main_window) |existing_window| {
+        const window = existing_window.as(gtk.Window);
+        window.as(gtk.Widget).show();
+        window.present();
     }
 }
 
@@ -343,6 +402,21 @@ fn updateLikeState(liked: bool) bool {
     } else {
         menu_props_like[1].value = PropVariant.new(.{ .label = GStr.new("添加喜欢") });
         menu_props_like[2].value = PropVariant.new(.{ .icon_name = GStr.new("love") });
+    }
+    return true;
+}
+
+fn updateMutedState(muted: bool) bool {
+    if (now_playing_muted) |old| {
+        if (old == muted) return false;
+    }
+    now_playing_muted = muted;
+    if (muted) {
+        menu_props_mute[1].value = PropVariant.new(.{ .label = GStr.new("取消静音") });
+        menu_props_mute[2].value = PropVariant.new(.{ .icon_name = GStr.new("audio-volume-high-symbolic") });
+    } else {
+        menu_props_mute[1].value = PropVariant.new(.{ .label = GStr.new("静音") });
+        menu_props_mute[2].value = PropVariant.new(.{ .icon_name = GStr.new("audio-volume-muted-symbolic") });
     }
     return true;
 }
@@ -418,6 +492,7 @@ fn emitMenuUpdated() void {
         .{ .id = 100, .props = PropDict.new(&now_playing_label_prop) },
         .{ .id = 1, .props = PropDict.new(&menu_props_play_pause) },
         .{ .id = 4, .props = PropDict.new(&menu_props_like) },
+        .{ .id = 13, .props = PropDict.new(&menu_props_mute) },
         .{ .id = 5, .props = PropDict.new(&menu_props_repeat) },
     };
     emitMenuSignal(conn, "ItemsPropertiesUpdated", .{
@@ -438,8 +513,9 @@ fn updateNowPlayingFromJson(json_text: []const u8) void {
     const label_changed = updateNowPlayingLabel(title, artist, album);
     const playback_changed = if (obj.get("playing")) |v| if (v == .bool) updatePlaybackState(v.bool) else false else false;
     const like_changed = if (obj.get("liked")) |v| if (v == .bool) updateLikeState(v.bool) else false else false;
+    const mute_changed = if (obj.get("muted")) |v| if (v == .bool) updateMutedState(v.bool) else false else false;
     const repeat_changed = if (obj.get("repeatMode")) |v| if (v == .string) updateRepeatMode(v.string) else false else false;
-    commitMenuUpdateIfNeeded(label_changed or playback_changed or like_changed or repeat_changed);
+    commitMenuUpdateIfNeeded(label_changed or playback_changed or like_changed or mute_changed or repeat_changed);
 }
 
 fn updateNowPlayingFromJscValue(value: *javascriptcore.Value) void {
@@ -486,7 +562,6 @@ fn onActivate(app: *gio.Application, _: ?*anyopaque) callconv(.c) void {
     const view = createWebView();
     current_web_view = view;
 
-    // Enable the default context menu's "Inspect Element" entry / Web Inspector.
     const settings = view.getSettings();
     settings.setEnableDeveloperExtras(1);
     // Netease's web player rejects the default WebKitGTK user agent.
@@ -513,11 +588,12 @@ fn onActivate(app: *gio.Application, _: ?*anyopaque) callconv(.c) void {
     manager.addScript(polyfill_script);
     polyfill_script.unref();
 
-    // Some pages interfere with the default context menu. Always keep an
-    // inspector entry in WebKit's proposed menu and let WebKit show it.
-    _ = webkit.WebView.signals.context_menu.connect(view, ?*anyopaque, onContextMenu, null, .{});
-
     window.as(gtk.Window).setChild(view.as(gtk.Widget));
+
+    const key_controller = gtk.EventControllerKey.new();
+    key_controller.as(gtk.EventController).setPropagationPhase(.capture);
+    _ = gtk.EventControllerKey.signals.key_pressed.connect(key_controller, ?*anyopaque, onKeyPressed, null, .{});
+    window.as(gtk.Widget).addController(key_controller.as(gtk.EventController));
 
     _ = gtk.Window.signals.close_request.connect(window.as(gtk.Window), ?*anyopaque, onCloseRequest, null, .{});
     _ = gtk.Widget.signals.unrealize.connect(window.as(gtk.Widget), ?*anyopaque, onWindowUnrealize, null, .{});
@@ -589,16 +665,12 @@ fn onWindowUnrealize(widget: *gtk.Widget, _: ?*anyopaque) callconv(.c) void {
     saveWindowState(window);
 }
 
-fn onContextMenu(
-    _: *webkit.WebView,
-    menu: *webkit.ContextMenu,
-    _: *webkit.HitTestResult,
-    _: ?*anyopaque,
-) callconv(.c) c_int {
-    const inspect = webkit.ContextMenuItem.newFromStockAction(.inspect_element);
-    menu.append(inspect);
-
-    // FALSE: do not suppress the menu; show WebKit's menu.
+fn onKeyPressed(_: *gtk.EventControllerKey, keyval: c_uint, _: c_uint, _: gdk.ModifierType, _: ?*anyopaque) callconv(.c) c_int {
+    if (keyval != gdk.KEY_F12) return 0;
+    if (current_web_view) |view| {
+        view.getInspector().show();
+        return 1;
+    }
     return 0;
 }
 
@@ -704,6 +776,7 @@ const TrayMenu = struct {
             2 => scheduleTrayAction(.previous),
             3 => scheduleTrayAction(.next),
             4 => scheduleTrayAction(.toggle_like),
+            13 => scheduleTrayAction(.toggle_mute),
             6 => scheduleTrayAction(.repeat_random),
             7 => scheduleTrayAction(.repeat_order),
             8 => scheduleTrayAction(.repeat_heart),
