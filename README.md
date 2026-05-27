@@ -44,7 +44,7 @@ nix build .#
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    netease-music-webplayer.url = "github:HumXC/netease-webplayer";
+    netease-music-webplayer.url = "github:HumXC/netease-music-webplayer";
   };
 
   outputs = { nixpkgs, netease-music-webplayer, ... }:
@@ -71,7 +71,7 @@ nix build .#
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    netease-music-webplayer.url = "github:HumXC/netease-webplayer";
+    netease-music-webplayer.url = "github:HumXC/netease-music-webplayer";
   };
 
   outputs = { nixpkgs, netease-music-webplayer, ... }: {
@@ -102,7 +102,7 @@ nix build .#
 直接运行远程 flake：
 
 ```sh
-nix run github:HumXC/netease-webplayer
+nix run github:HumXC/netease-music-webplayer
 ```
 
 构建本地 checkout：
