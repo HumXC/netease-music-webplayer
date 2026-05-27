@@ -22,54 +22,148 @@
 
 ## 运行
 
-使用 Nix：
+使用 Nix 直接运行本地 checkout：
 
 ```sh
 nix run .#
 ```
 
-构建：
+使用 Nix 构建：
 
 ```sh
 nix build .#
+```
+
+## 在 NixOS / Flake 中使用
+
+本项目提供 `packages` 和 `overlays.default`。
+
+### 作为 flake package 使用
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    netease-music-webplayer.url = "github:HumXC/netease-webplayer";
+  };
+
+  outputs = { nixpkgs, netease-music-webplayer, ... }:
+    let
+      system = "x86_64-linux";
+    in {
+      nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          ({ ... }: {
+            environment.systemPackages = [
+              netease-music-webplayer.packages.${system}.default
+            ];
+          })
+        ];
+      };
+    };
+}
+```
+
+### 作为 overlay 使用
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    netease-music-webplayer.url = "github:HumXC/netease-webplayer";
+  };
+
+  outputs = { nixpkgs, netease-music-webplayer, ... }: {
+    nixosConfigurations.your-host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ({ pkgs, ... }: {
+          nixpkgs.overlays = [
+            netease-music-webplayer.overlays.default
+          ];
+
+          environment.systemPackages = [
+            pkgs.netease-music-webplayer
+          ];
+        })
+      ];
+    };
+  };
+}
 ```
 
 ## Cachix 二进制缓存
 
 项目提供 Cachix 缓存，可避免在本地完整编译 WebKitGTK 等依赖。
 
-一次性使用：
+缓存配置已经写在本项目的 `flake.nix` 的 `nixConfig` 中。首次运行时，Nix 可能会询问是否信任该 flake 提供的额外 substituter 和 public key，确认后即可使用缓存。
+
+直接运行远程 flake：
 
 ```sh
-nix run \
-  --extra-substituters https://netease-music-webplayer.cachix.org \
-  --extra-trusted-public-keys netease-music-webplayer.cachix.org-1:PKEilRsFVSr1IXF0oFIoGTbJ3Lih7PYH5RII7w0ntzo= \
-  .#
+nix run github:HumXC/netease-webplayer
 ```
 
-构建时使用：
+构建本地 checkout：
 
 ```sh
-nix build \
-  --extra-substituters https://netease-music-webplayer.cachix.org \
-  --extra-trusted-public-keys netease-music-webplayer.cachix.org-1:PKEilRsFVSr1IXF0oFIoGTbJ3Lih7PYH5RII7w0ntzo= \
-  .#
+nix build .#
 ```
 
-也可以用 Cachix CLI 持久启用：
+如果你的 Nix 配置禁止接受 flake 的 `nixConfig`，也可以用 Cachix CLI 手动启用：
 
 ```sh
 cachix use netease-music-webplayer
 ```
 
-或手动加入 Nix 配置：
+## 非 Nix 环境构建
 
-```conf
-substituters = https://cache.nixos.org https://netease-music-webplayer.cachix.org
-trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWmJwzgbUyFE4guS7euj6Ct4VbF1E= netease-music-webplayer.cachix.org-1:PKEilRsFVSr1IXF0oFIoGTbJ3Lih7PYH5RII7w0ntzo=
+需要 Zig **0.16.0**。
+
+还需要安装 GTK / WebKitGTK / GStreamer 相关开发包和工具：
+
+- `zig` 0.16.0
+- C 编译器，例如 `gcc` 或 `clang`
+- `pkg-config`
+- `python3`（构建脚本会临时 patch 第三方 Zig 依赖）
+- GTK4 开发库
+- WebKitGTK 6.0 开发库
+- JavaScriptCoreGTK 6.0 开发库（通常随 WebKitGTK 6.0 提供）
+- GLib / GObject / GIO 开发库
+- libsoup 3 开发库
+- glib-networking（运行时 TLS 支持）
+- GStreamer 1.0 及常用插件：
+  - gstreamer
+  - gst-plugins-base
+  - gst-plugins-good
+  - gst-plugins-ugly
+  - gst-libav
+
+Debian / Ubuntu 系发行版包名可能类似：
+
+```sh
+sudo apt install \
+  zig pkg-config python3 gcc \
+  libgtk-4-dev libwebkitgtk-6.0-dev \
+  libglib2.0-dev libsoup-3.0-dev \
+  glib-networking \
+  gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-ugly \
+  gstreamer1.0-libav
 ```
 
-或进入开发环境后用 Zig 构建：
+不同发行版包名可能不同；关键是 `pkg-config` 能找到 `gtk4`、`webkitgtk-6.0`、`javascriptcoregtk-6.0` 等依赖。
+
+构建：
+
+```sh
+zig build
+./zig-out/bin/netease-music-webplayer
+```
+
+也可以进入 Nix 开发环境后用 Zig 构建：
 
 ```sh
 nix develop
