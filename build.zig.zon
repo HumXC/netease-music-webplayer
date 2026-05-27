@@ -1,0 +1,23 @@
+.{
+    .name = .netease_music_webplayer,
+    .version = "0.1.0",
+    .fingerprint = 0x2b4d58bb74f7259c,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .goose = .{
+            .url = "git+https://github.com/luxluth/goose.git#master",
+            .hash = "goose-1.0.0-e9MzMGKcAgD7vlp_acJYt6g430wQcrAxUKWHEEF0_Hcc",
+        },
+        .gobject = .{
+            .url = "https://github.com/ianprime0509/zig-gobject/releases/download/v0.3.1/bindings-gnome49.tar.zst",
+            .hash = "gobject-0.3.1-Skun7JC5fAFWOaM_zWo3XZAw7wPa6GYKK6U76Yy_Jkvt",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "README.md",
+        "flake.nix",
+    },
+}

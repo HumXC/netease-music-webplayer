@@ -1,0 +1,23 @@
+# Build outputs
+/bin/
+/dist/
+/netease-music-webplayer
+
+# Go
+/vendor/
+*.test
+coverage.out
+
+# Runtime data
+.webui-profile/
+.direnv/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+.envrc
+.direnv
+zig-pkg
+.zig-cache
+zig-out
