@@ -20,19 +20,20 @@
     systems = ["x86_64-linux" "aarch64-linux"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
     mkPackage = pkgs: let
-      zigDeps = pkgs.linkFarm "netease-music-webplayer-zig-pkg" [
-        {
-          name = "goose-1.0.0-e9MzMGKcAgD7vlp_acJYt6g430wQcrAxUKWHEEF0_Hcc";
-          path = pkgs.fetchFromGitHub {
-            owner = "luxluth";
-            repo = "goose";
-            rev = "387de965800bf0f6116d51f45a9412cba0801975";
-            hash = "sha256-SWx6eoQ47DcIdQEdTaKb7b2Rn/6qB+XhCYTBMtMrGGw=";
-          };
-        }
-      ];
+      lib = pkgs.lib;
+      stdenv = pkgs.stdenv;
+      deps = pkgs.callPackage ./deps.nix {};
+      glibcVersion =
+        lib.versions.majorMinor stdenv.cc.libc.version;
+
+      target =
+        if stdenv.hostPlatform.isx86_64
+        then "x86_64-linux-gnu.${glibcVersion}"
+        else if stdenv.hostPlatform.isAarch64
+        then "aarch64-linux-gnu.${glibcVersion}"
+        else throw "Unsupported system: ${stdenv.hostPlatform.system}";
     in
-      pkgs.stdenv.mkDerivation {
+      stdenv.mkDerivation {
         pname = "netease-music-webplayer";
         version = "0.1.0";
         src = builtins.path {
@@ -41,7 +42,8 @@
         };
 
         nativeBuildInputs = with pkgs; [
-          zig_0_16
+          zig
+          sedutil
           pkg-config
           curlFull.dev
         ];
@@ -67,28 +69,19 @@
         buildInputs = with pkgs; [
           curlFull
         ];
+        hardeningDisable = [
+          "fortify"
+        ];
+        dontUseZigCheck = true;
 
-        dontConfigure = true;
-        dontBuild = true;
+        zigBuildFlags = [
+          "--system"
+          "${deps}"
 
-        installPhase = ''
-          runHook preInstall
+          "-Doptimize=ReleaseFast"
 
-          rm -rf zig-pkg
-          cp -R --dereference ${zigDeps} zig-pkg
-          chmod -R u+w zig-pkg
-
-          export ZIG_GLOBAL_CACHE_DIR="$PWD/zig-pkg"
-          export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-cache"
-          zig build \
-            -Doptimize=ReleaseSafe \
-            --global-cache-dir "$ZIG_GLOBAL_CACHE_DIR" \
-            --cache-dir "$ZIG_LOCAL_CACHE_DIR" \
-            --prefix "$out" \
-            install
-
-          runHook postInstall
-        '';
+          "-Dtarget=${target}"
+        ];
 
         meta = with pkgs.lib; {
           description = "Netease Cloud Music WebKitGTK wrapper with tray controls";

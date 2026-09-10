@@ -1,0 +1,21 @@
+diff --git a/src/dispatcher.zig b/src/dispatcher.zig
+index f957240..73887d9 100644
+--- a/src/dispatcher.zig
++++ b/src/dispatcher.zig
+@@ -37,14 +37,14 @@ pub fn getDispatchFn(comptime T: type) fn (*const common.InterfaceWrapper, *Conn
+                     const FType = f.type;
+                     const type_info = @typeInfo(FType);
+                     const DataType = if (type_info == .@"struct" and @hasDecl(FType, "__is_goose_property")) FType.DataType else FType;
+-                    const is_prop = if (type_info == .@"struct" and @hasDecl(FType, "__is_goose_property")) true else pblk: {
++                    const is_prop = comptime if (type_info == .@"struct" and @hasDecl(FType, "__is_goose_property")) true else pblk: {
+                         const is_signal = (type_info == .@"struct" and @hasDecl(FType, "__is_goose_signal"));
+                         const is_conn = std.mem.eql(u8, f.name, "conn");
+                         const is_ptr = (type_info == .pointer and type_info.pointer.size != .slice);
+                         break :pblk !is_signal and !is_conn and !is_ptr;
+                     };
+ 
+-                    if (is_prop) {
++                    if (comptime is_prop) {
+                         union_fields_name = union_fields_name ++ &[_][:0]const u8{f.name};
+                         union_fields_type = union_fields_type ++ &[_]type{DataType};
+                         enum_fields_name = enum_fields_name ++ &[_][:0]const u8{f.name};

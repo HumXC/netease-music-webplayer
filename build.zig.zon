@@ -5,8 +5,8 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .goose = .{
-            .url = "git+https://github.com/luxluth/goose.git#master",
-            .hash = "goose-1.0.0-e9MzMGKcAgD7vlp_acJYt6g430wQcrAxUKWHEEF0_Hcc",
+            .url = "git+https://github.com/luxluth/goose.git#6e91762f8f0244295eff62071e37b7460bfc41ae",
+            .hash = "goose-2.0.0-e9MzMMUaAwDs4vGzB15VSOtkL_7tmfcfN8GoEiVbUbVZ",
         },
     },
     .paths = .{
