@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Setup Cachix
+        if: ${{ secrets.CACHIX_AUTH_TOKEN != '' }}
+        uses: cachix/cachix-action@v16
+        with:
+          name: netease-music-webplayer
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      # Raw binaries
+
+      - name: Build x86_64 binary
+        run: |
+          nix build .#x86_64-linux \
+            --print-build-logs \
+            --out-link result-x86_64
+
+      - name: Build aarch64 binary
+        run: |
+          nix build .#aarch64-linux \
+            --print-build-logs \
+            --out-link result-aarch64
+
+      # Debian packages
+
+      - name: Build x86_64 DEB
+        run: |
+          nix build .#deb-x86_64 \
+            --print-build-logs \
+            --out-link result-deb-x86_64
+
+      - name: Build aarch64 DEB
+        run: |
+          nix build .#deb-aarch64 \
+            --print-build-logs \
+            --out-link result-deb-aarch64
+
+      # RPM packages
+
+      - name: Build x86_64 RPM
+        run: |
+          nix build .#rpm-x86_64 \
+            --print-build-logs \
+            --out-link result-rpm-x86_64
+
+      - name: Build aarch64 RPM
+        run: |
+          nix build .#rpm-aarch64 \
+            --print-build-logs \
+            --out-link result-rpm-aarch64
+
+      # Arch Linux packages
+
+      - name: Build x86_64 Arch package
+        run: |
+          nix build .#arch-x86_64 \
+            --print-build-logs \
+            --out-link result-arch-x86_64
+
+      - name: Build aarch64 Arch package
+        run: |
+          nix build .#arch-aarch64 \
+            --print-build-logs \
+            --out-link result-arch-aarch64
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+
+          # Raw static binaries
+          cp \
+            result-x86_64/bin/netease-music-webplayer \
+            release/netease-music-webplayer-linux-x86_64
+
+          cp \
+            result-aarch64/bin/netease-music-webplayer \
+            release/netease-music-webplayer-linux-aarch64
+
+          chmod +x \
+            release/netease-music-webplayer-linux-x86_64 \
+            release/netease-music-webplayer-linux-aarch64
+
+          # Distribution packages
+          cp -L result-deb-x86_64/* release/
+          cp -L result-deb-aarch64/* release/
+
+          cp -L result-rpm-x86_64/* release/
+          cp -L result-rpm-aarch64/* release/
+
+          cp -L result-arch-x86_64/* release/
+          cp -L result-arch-aarch64/* release/
+
+          echo "Release assets:"
+          ls -lh release/
+
+          echo
+          echo "Binary architectures:"
+          file \
+            release/netease-music-webplayer-linux-x86_64 \
+            release/netease-music-webplayer-linux-aarch64
+
+      - name: Delete previous latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+
+      - name: Create latest tag
+        run: |
+          git tag -f latest "${GITHUB_SHA}"
+          git push origin refs/tags/latest --force
+
+      - name: Create latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create latest \
+            release/* \
+            --title "Latest" \
+            --latest
