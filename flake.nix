@@ -92,6 +92,9 @@
         };
       };
   in {
+    overlays.default = final: prev: {
+      netease-music-webplayer = mkPackage final;
+    };
     packages = forAllSystems (
       system: let
         pkgs = import nixpkgs {
