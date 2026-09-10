@@ -21,3 +21,4 @@ coverage.out
 zig-pkg
 .zig-cache
 zig-out
+result

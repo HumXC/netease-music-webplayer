@@ -20,17 +20,14 @@
     systems = ["x86_64-linux" "aarch64-linux"];
     forAllSystems = nixpkgs.lib.genAttrs systems;
     mkPackage = pkgs: let
-      lib = pkgs.lib;
       stdenv = pkgs.stdenv;
       deps = pkgs.callPackage ./deps.nix {};
-      glibcVersion =
-        lib.versions.majorMinor stdenv.cc.libc.version;
 
       target =
         if stdenv.hostPlatform.isx86_64
-        then "x86_64-linux-gnu.${glibcVersion}"
+        then "x86_64-linux-musl"
         else if stdenv.hostPlatform.isAarch64
-        then "aarch64-linux-gnu.${glibcVersion}"
+        then "aarch64-linux-musl"
         else throw "Unsupported system: ${stdenv.hostPlatform.system}";
     in
       stdenv.mkDerivation {
@@ -43,9 +40,6 @@
 
         nativeBuildInputs = with pkgs; [
           zig
-          sedutil
-          pkg-config
-          curlFull.dev
         ];
 
         desktopItems = [
@@ -66,9 +60,7 @@
           })
         ];
 
-        buildInputs = with pkgs; [
-          curlFull
-        ];
+        buildInputs = with pkgs; [];
         hardeningDisable = [
           "fortify"
         ];
@@ -78,7 +70,7 @@
           "--system"
           "${deps}"
 
-          "-Doptimize=ReleaseFast"
+          "-Doptimize=ReleaseSmall"
 
           "-Dtarget=${target}"
         ];
@@ -117,8 +109,6 @@
         packages = with pkgs; [
           zig_0_16
           zls
-          pkg-config
-          curlFull.dev
         ];
       };
     });

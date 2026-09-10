@@ -1,82 +1,70 @@
 const std = @import("std");
-
-const c = @cImport({
-    @cInclude("curl/curl.h");
-});
+const websocket = @import("websocket");
 
 const allocator = std.heap.smp_allocator;
 
-const CurlBuffer = struct {
-    data: std.ArrayList(u8) = .empty,
+const max_ws_message_size = 16 * 1024 * 1024;
 
-    fn deinit(self: *CurlBuffer) void {
-        self.data.deinit(allocator);
+// Kept for compatibility with the existing main.zig.
+// No global initialization is required by std.http or websocket.zig.
+pub fn globalInit() !void {}
+
+pub fn globalDeinit() void {}
+
+fn httpGet(
+    io: std.Io,
+    url: []const u8,
+) ![]u8 {
+    var client: std.http.Client = .{
+        .allocator = allocator,
+        .io = io,
+    };
+    defer client.deinit();
+
+    var body: std.Io.Writer.Allocating =
+        .init(allocator);
+    errdefer body.deinit();
+
+    const response = try client.fetch(.{
+        .location = .{
+            .url = url,
+        },
+        .response_writer = &body.writer,
+    });
+
+    if (response.status.class() != .success) {
+        std.debug.print(
+            "[cdp] HTTP request failed: {d}\n",
+            .{@intFromEnum(response.status)},
+        );
+        return error.HttpRequestFailed;
     }
-};
 
-fn curlWriteCallback(
-    ptr: ?*anyopaque,
-    size: usize,
-    nmemb: usize,
-    userdata: ?*anyopaque,
-) callconv(.c) usize {
-    if (ptr == null or userdata == null) return 0;
-    const total = size * nmemb;
-    if (total == 0) return 0;
-
-    const buffer: *CurlBuffer = @ptrCast(@alignCast(userdata.?));
-    const bytes: [*]const u8 = @ptrCast(ptr.?);
-    buffer.data.appendSlice(allocator, bytes[0..total]) catch return 0;
-    return total;
+    return try body.toOwnedSlice();
 }
 
-pub fn globalInit() !void {
-    try curlCheck(c.curl_global_init(c.CURL_GLOBAL_ALL));
-}
-
-pub fn globalDeinit() void {
-    c.curl_global_cleanup();
-}
-
-fn curlCheck(result: c.CURLcode) !void {
-    if (result == c.CURLE_OK) return;
-    std.debug.print(
-        "[curl] {s}\n",
-        .{std.mem.span(c.curl_easy_strerror(result))},
-    );
-    return error.CurlError;
-}
-
-fn httpGet(url: [:0]const u8) ![]u8 {
-    const curl = c.curl_easy_init() orelse return error.CurlInitFailed;
-    defer c.curl_easy_cleanup(curl);
-
-    var buffer: CurlBuffer = .{};
-    errdefer buffer.deinit();
-
-    try curlCheck(c.curl_easy_setopt(curl, c.CURLOPT_URL, url.ptr));
-    try curlCheck(c.curl_easy_setopt(curl, c.CURLOPT_WRITEFUNCTION, curlWriteCallback));
-    try curlCheck(c.curl_easy_setopt(curl, c.CURLOPT_WRITEDATA, &buffer));
-    try curlCheck(c.curl_easy_setopt(curl, c.CURLOPT_CONNECTTIMEOUT_MS, @as(c_long, 3000)));
-    try curlCheck(c.curl_easy_setopt(curl, c.CURLOPT_TIMEOUT_MS, @as(c_long, 5000)));
-    try curlCheck(c.curl_easy_perform(curl));
-
-    return try buffer.data.toOwnedSlice(allocator);
-}
-
-pub fn findNeteaseTarget(io: std.Io, port: u16) ![]u8 {
-    const list_url = try std.fmt.allocPrintSentinel(
+pub fn findNeteaseTarget(
+    io: std.Io,
+    port: u16,
+) ![]u8 {
+    const list_url = try std.fmt.allocPrint(
         allocator,
         "http://127.0.0.1:{d}/json/list",
         .{port},
-        0,
     );
     defer allocator.free(list_url);
 
     var attempt: usize = 0;
+
     while (attempt < 200) : (attempt += 1) {
-        const body = httpGet(list_url) catch {
-            try io.sleep(.fromMilliseconds(50), .awake);
+        const body = httpGet(
+            io,
+            list_url,
+        ) catch {
+            try io.sleep(
+                .fromMilliseconds(50),
+                .awake,
+            );
             continue;
         };
         defer allocator.free(body);
@@ -87,175 +75,425 @@ pub fn findNeteaseTarget(io: std.Io, port: u16) ![]u8 {
             body,
             .{},
         ) catch {
-            try io.sleep(.fromMilliseconds(50), .awake);
+            try io.sleep(
+                .fromMilliseconds(50),
+                .awake,
+            );
             continue;
         };
         defer parsed.deinit();
 
         if (parsed.value != .array) {
-            try io.sleep(.fromMilliseconds(50), .awake);
+            try io.sleep(
+                .fromMilliseconds(50),
+                .awake,
+            );
             continue;
         }
 
         for (parsed.value.array.items) |target| {
-            if (target != .object) continue;
+            if (target != .object)
+                continue;
+
             const obj = target.object;
 
-            const typ = getString(obj, "type");
-            if (!std.mem.eql(u8, typ, "page")) continue;
+            const typ =
+                getString(obj, "type");
 
-            const page_url = getString(obj, "url");
-            if (std.mem.indexOf(u8, page_url, "music.163.com") == null) continue;
+            if (!std.mem.eql(
+                u8,
+                typ,
+                "page",
+            )) {
+                continue;
+            }
 
-            const ws_url = getString(obj, "webSocketDebuggerUrl");
-            if (ws_url.len == 0) continue;
+            const page_url =
+                getString(obj, "url");
 
-            std.debug.print("[cdp] target: {s}\n", .{page_url});
-            return try allocator.dupe(u8, ws_url);
+            if (std.mem.indexOf(
+                u8,
+                page_url,
+                "music.163.com",
+            ) == null) {
+                continue;
+            }
+
+            const ws_url =
+                getString(
+                    obj,
+                    "webSocketDebuggerUrl",
+                );
+
+            if (ws_url.len == 0)
+                continue;
+
+            std.debug.print(
+                "[cdp] target: {s}\n",
+                .{page_url},
+            );
+
+            return try allocator.dupe(
+                u8,
+                ws_url,
+            );
         }
 
-        try io.sleep(.fromMilliseconds(50), .awake);
+        try io.sleep(
+            .fromMilliseconds(50),
+            .awake,
+        );
     }
 
     return error.NeteaseTargetNotFound;
 }
 
-fn getString(obj: std.json.ObjectMap, key: []const u8) []const u8 {
-    const value = obj.get(key) orelse return "";
-    return if (value == .string) value.string else "";
+fn getString(
+    obj: std.json.ObjectMap,
+    key: []const u8,
+) []const u8 {
+    const value =
+        obj.get(key) orelse return "";
+
+    return if (value == .string)
+        value.string
+    else
+        "";
 }
 
-fn appendJsonString(list: *std.ArrayList(u8), value: []const u8) !void {
-    try list.append(allocator, '"');
+fn appendJsonString(
+    list: *std.ArrayList(u8),
+    value: []const u8,
+) !void {
+    try list.append(
+        allocator,
+        '"',
+    );
 
     for (value) |ch| {
         switch (ch) {
-            '"' => try list.appendSlice(allocator, "\\\""),
-            '\\' => try list.appendSlice(allocator, "\\\\"),
-            '\n' => try list.appendSlice(allocator, "\\n"),
-            '\r' => try list.appendSlice(allocator, "\\r"),
-            '\t' => try list.appendSlice(allocator, "\\t"),
-            '\x08' => try list.appendSlice(allocator, "\\b"),
-            '\x0c' => try list.appendSlice(allocator, "\\f"),
-            0...0x07, 0x0b, 0x0e...0x1f => {
+            '"' => try list.appendSlice(
+                allocator,
+                "\\\"",
+            ),
+
+            '\\' => try list.appendSlice(
+                allocator,
+                "\\\\",
+            ),
+
+            '\n' => try list.appendSlice(
+                allocator,
+                "\\n",
+            ),
+
+            '\r' => try list.appendSlice(
+                allocator,
+                "\\r",
+            ),
+
+            '\t' => try list.appendSlice(
+                allocator,
+                "\\t",
+            ),
+
+            '\x08' => try list.appendSlice(
+                allocator,
+                "\\b",
+            ),
+
+            '\x0c' => try list.appendSlice(
+                allocator,
+                "\\f",
+            ),
+
+            0...0x07,
+            0x0b,
+            0x0e...0x1f,
+            => {
                 var tmp: [6]u8 = undefined;
-                const escaped = try std.fmt.bufPrint(&tmp, "\\u{x:0>4}", .{ch});
-                try list.appendSlice(allocator, escaped);
+
+                const escaped =
+                    try std.fmt.bufPrint(
+                        &tmp,
+                        "\\u{x:0>4}",
+                        .{ch},
+                    );
+
+                try list.appendSlice(
+                    allocator,
+                    escaped,
+                );
             },
-            else => try list.append(allocator, ch),
+
+            else => try list.append(
+                allocator,
+                ch,
+            ),
         }
     }
 
-    try list.append(allocator, '"');
+    try list.append(
+        allocator,
+        '"',
+    );
+}
+
+const WsAddress = struct {
+    host: []const u8,
+    port: u16,
+    path: []const u8,
+    tls: bool,
+};
+
+fn parseWebSocketUrl(
+    url: []const u8,
+) !WsAddress {
+    var rest: []const u8 = undefined;
+    var tls = false;
+    var default_port: u16 = 80;
+
+    if (std.mem.startsWith(
+        u8,
+        url,
+        "ws://",
+    )) {
+        rest = url["ws://".len..];
+    } else if (std.mem.startsWith(
+        u8,
+        url,
+        "wss://",
+    )) {
+        rest = url["wss://".len..];
+        tls = true;
+        default_port = 443;
+    } else {
+        return error.UnsupportedWebSocketScheme;
+    }
+
+    if (rest.len == 0)
+        return error.InvalidWebSocketUrl;
+
+    const slash_index =
+        std.mem.indexOfScalar(
+            u8,
+            rest,
+            '/',
+        );
+
+    const authority =
+        if (slash_index) |index|
+            rest[0..index]
+        else
+            rest;
+
+    const path =
+        if (slash_index) |index|
+            rest[index..]
+        else
+            "/";
+
+    if (authority.len == 0)
+        return error.InvalidWebSocketUrl;
+
+    // IPv6 literal:
+    //
+    //   ws://[::1]:9222/devtools/page/...
+    if (authority[0] == '[') {
+        const closing =
+            std.mem.indexOfScalar(
+                u8,
+                authority,
+                ']',
+            ) orelse
+            return error.InvalidWebSocketUrl;
+
+        const host =
+            authority[1..closing];
+
+        if (host.len == 0)
+            return error.InvalidWebSocketUrl;
+
+        var port =
+            default_port;
+
+        const remaining =
+            authority[closing + 1 ..];
+
+        if (remaining.len != 0) {
+            if (remaining[0] != ':' or
+                remaining.len == 1)
+            {
+                return error.InvalidWebSocketUrl;
+            }
+
+            port = try std.fmt.parseInt(
+                u16,
+                remaining[1..],
+                10,
+            );
+        }
+
+        return .{
+            .host = host,
+            .port = port,
+            .path = path,
+            .tls = tls,
+        };
+    }
+
+    // Chrome normally gives us:
+    //
+    // ws://127.0.0.1:PORT/devtools/page/ID
+    const colon =
+        std.mem.lastIndexOfScalar(
+            u8,
+            authority,
+            ':',
+        );
+
+    if (colon) |index| {
+        if (index == 0 or
+            index + 1 >= authority.len)
+        {
+            return error.InvalidWebSocketUrl;
+        }
+
+        const host =
+            authority[0..index];
+
+        const port =
+            try std.fmt.parseInt(
+                u16,
+                authority[index + 1 ..],
+                10,
+            );
+
+        return .{
+            .host = host,
+            .port = port,
+            .path = path,
+            .tls = tls,
+        };
+    }
+
+    return .{
+        .host = authority,
+        .port = default_port,
+        .path = path,
+        .tls = tls,
+    };
 }
 
 pub const Client = struct {
-    curl: *c.CURL,
+    ws: websocket.Client,
     io: std.Io,
+
     next_id: u32 = 1,
+
     mutex: std.Io.Mutex = .init,
 
-    pub fn connect(io: std.Io, ws_url: []const u8) !Client {
-        const curl = c.curl_easy_init() orelse return error.CurlInitFailed;
-        errdefer c.curl_easy_cleanup(curl);
+    pub fn connect(
+        io: std.Io,
+        ws_url: []const u8,
+    ) !Client {
+        const address =
+            try parseWebSocketUrl(ws_url);
 
-        const url_z = try allocator.dupeZ(u8, ws_url);
-        defer allocator.free(url_z);
+        std.debug.print(
+            "[cdp] connecting websocket {s}:{d}{s}...\n",
+            .{
+                address.host,
+                address.port,
+                address.path,
+            },
+        );
 
-        try curlCheck(c.curl_easy_setopt(curl, c.CURLOPT_URL, url_z.ptr));
-        try curlCheck(c.curl_easy_setopt(curl, c.CURLOPT_CONNECT_ONLY, @as(c_long, 2)));
-        try curlCheck(c.curl_easy_setopt(curl, c.CURLOPT_CONNECTTIMEOUT_MS, @as(c_long, 5000)));
-        try curlCheck(c.curl_easy_setopt(curl, c.CURLOPT_TIMEOUT_MS, @as(c_long, 5000)));
+        var ws = try websocket.Client.init(
+            io,
+            allocator,
+            .{
+                .host = address.host,
+                .port = address.port,
+                .tls = address.tls,
 
-        std.debug.print("[cdp] connecting websocket...\n", .{});
-        try curlCheck(c.curl_easy_perform(curl));
-        std.debug.print("[cdp] connected\n", .{});
+                .connect_timeout_ms = 5000,
+
+                .buffer_size = 16 * 1024,
+                .max_size = max_ws_message_size,
+            },
+        );
+        errdefer ws.deinit();
+
+        try ws.handshake(
+            address.path,
+            .{
+                .timeout_ms = 5000,
+            },
+        );
+
+        std.debug.print(
+            "[cdp] connected\n",
+            .{},
+        );
 
         return .{
-            .curl = curl,
+            .ws = ws,
             .io = io,
         };
     }
 
-    pub fn deinit(self: *Client) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
+    pub fn deinit(
+        self: *Client,
+    ) void {
+        self.mutex.lockUncancelable(
+            self.io,
+        );
+        defer self.mutex.unlock(
+            self.io,
+        );
 
-        var sent: usize = 0;
-        _ = c.curl_ws_send(self.curl, "", 0, &sent, 0, c.CURLWS_CLOSE);
-        c.curl_easy_cleanup(self.curl);
+        self.ws.close(.{}) catch {};
+        self.ws.deinit();
     }
 
-    fn sendTextUnlocked(self: *Client, payload: []const u8) !void {
-        var offset: usize = 0;
-        while (offset < payload.len) {
-            var sent: usize = 0;
-            const result = c.curl_ws_send(
-                self.curl,
-                payload.ptr + offset,
-                payload.len - offset,
-                &sent,
-                0,
-                c.CURLWS_TEXT,
-            );
-
-            if (result == c.CURLE_AGAIN) {
-                try self.io.sleep(.fromMilliseconds(10), .awake);
-                continue;
-            }
-
-            try curlCheck(result);
-
-            if (sent == 0) {
-                try self.io.sleep(.fromMilliseconds(10), .awake);
-                continue;
-            }
-
-            offset += sent;
-        }
+    fn sendTextUnlocked(
+        self: *Client,
+        payload: []const u8,
+    ) !void {
+        // websocket.zig currently declares its client
+        // write API as []u8 even though the payload is
+        // not modified by this call.
+        try self.ws.write(
+            @constCast(payload),
+        );
     }
 
-    fn receiveTextUnlocked(self: *Client) ![]u8 {
-        var output: std.ArrayList(u8) = .empty;
-        errdefer output.deinit(allocator);
-
+    fn receiveTextUnlocked(
+        self: *Client,
+    ) ![]u8 {
         while (true) {
-            var buffer: [64 * 1024]u8 = undefined;
-            var received: usize = 0;
-            var meta: ?*const c.struct_curl_ws_frame = null;
+            const maybe_message =
+                try self.ws.read();
 
-            const result = c.curl_ws_recv(
-                self.curl,
-                &buffer,
-                buffer.len,
-                &received,
-                &meta,
-            );
+            const message =
+                maybe_message orelse continue;
 
-            if (result == c.CURLE_AGAIN) {
-                try self.io.sleep(.fromMilliseconds(10), .awake);
-                continue;
+            switch (message.type) {
+                .text => {
+                    // Message storage belongs to websocket.zig
+                    // and may be reused by the next read, so
+                    // duplicate it for the caller.
+                    return try allocator.dupe(
+                        u8,
+                        message.data,
+                    );
+                },
+
+                .close => return error.WebSocketClosed,
+
+                else => continue,
             }
-
-            try curlCheck(result);
-            const frame = meta orelse continue;
-
-            if ((frame.flags & c.CURLWS_CLOSE) != 0)
-                return error.WebSocketClosed;
-
-            if ((frame.flags & c.CURLWS_PING) != 0 or
-                (frame.flags & c.CURLWS_PONG) != 0)
-                continue;
-
-            if ((frame.flags & c.CURLWS_TEXT) == 0 and
-                (frame.flags & c.CURLWS_CONT) == 0)
-                continue;
-
-            if (received != 0)
-                try output.appendSlice(allocator, buffer[0..received]);
-
-            if (frame.bytesleft == 0)
-                return try output.toOwnedSlice(allocator);
         }
     }
 
@@ -264,48 +502,101 @@ pub const Client = struct {
         method: []const u8,
         params_json: []const u8,
     ) !std.json.Parsed(std.json.Value) {
-        const id = self.next_id;
+        const id =
+            self.next_id;
+
         self.next_id += 1;
 
-        var request: std.ArrayList(u8) = .empty;
-        defer request.deinit(allocator);
+        var request: std.ArrayList(u8) =
+            .empty;
 
-        try request.appendSlice(allocator, "{\"id\":");
+        defer request.deinit(
+            allocator,
+        );
 
-        var id_buf: [32]u8 = undefined;
-        const id_text = try std.fmt.bufPrint(&id_buf, "{d}", .{id});
-        try request.appendSlice(allocator, id_text);
+        try request.appendSlice(
+            allocator,
+            "{\"id\":",
+        );
 
-        try request.appendSlice(allocator, ",\"method\":");
-        try appendJsonString(&request, method);
-        try request.appendSlice(allocator, ",\"params\":");
-        try request.appendSlice(allocator, params_json);
-        try request.append(allocator, '}');
+        var id_buf: [32]u8 =
+            undefined;
 
-        try self.sendTextUnlocked(request.items);
+        const id_text =
+            try std.fmt.bufPrint(
+                &id_buf,
+                "{d}",
+                .{id},
+            );
+
+        try request.appendSlice(
+            allocator,
+            id_text,
+        );
+
+        try request.appendSlice(
+            allocator,
+            ",\"method\":",
+        );
+
+        try appendJsonString(
+            &request,
+            method,
+        );
+
+        try request.appendSlice(
+            allocator,
+            ",\"params\":",
+        );
+
+        try request.appendSlice(
+            allocator,
+            params_json,
+        );
+
+        try request.append(
+            allocator,
+            '}',
+        );
+
+        try self.sendTextUnlocked(
+            request.items,
+        );
 
         while (true) {
-            const message = try self.receiveTextUnlocked();
-            defer allocator.free(message);
+            const message =
+                try self.receiveTextUnlocked();
 
-            var parsed = std.json.parseFromSlice(
-                std.json.Value,
-                allocator,
+            defer allocator.free(
                 message,
-                .{},
-            ) catch continue;
+            );
+
+            var parsed =
+                std.json.parseFromSlice(
+                    std.json.Value,
+                    allocator,
+                    message,
+                    .{},
+                ) catch
+                    continue;
 
             if (parsed.value != .object) {
                 parsed.deinit();
                 continue;
             }
 
-            const response_id = parsed.value.object.get("id") orelse {
-                parsed.deinit();
-                continue;
-            };
+            const response_id =
+                parsed.value.object.get(
+                    "id",
+                ) orelse {
+                    // CDP event / notification.
+                    parsed.deinit();
+                    continue;
+                };
 
-            if (response_id != .integer or response_id.integer != id) {
+            if (response_id != .integer or
+                response_id.integer != id)
+            {
                 parsed.deinit();
                 continue;
             }
@@ -319,69 +610,144 @@ pub const Client = struct {
         method: []const u8,
         params_json: []const u8,
     ) !std.json.Parsed(std.json.Value) {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        return try self.commandUnlocked(method, params_json);
+        self.mutex.lockUncancelable(
+            self.io,
+        );
+        defer self.mutex.unlock(
+            self.io,
+        );
+
+        return try self.commandUnlocked(
+            method,
+            params_json,
+        );
     }
 
     fn evaluateUnlocked(
         self: *Client,
         expression: []const u8,
     ) !std.json.Parsed(std.json.Value) {
-        var params: std.ArrayList(u8) = .empty;
-        defer params.deinit(allocator);
+        var params: std.ArrayList(u8) =
+            .empty;
 
-        try params.appendSlice(allocator, "{\"expression\":");
-        try appendJsonString(&params, expression);
-        try params.appendSlice(
+        defer params.deinit(
             allocator,
-            ",\"returnByValue\":true,\"awaitPromise\":true,\"userGesture\":true}",
         );
 
-        return try self.commandUnlocked("Runtime.evaluate", params.items);
+        try params.appendSlice(
+            allocator,
+            "{\"expression\":",
+        );
+
+        try appendJsonString(
+            &params,
+            expression,
+        );
+
+        try params.appendSlice(
+            allocator,
+            ",\"returnByValue\":true," ++ "\"awaitPromise\":true," ++ "\"userGesture\":true}",
+        );
+
+        return try self.commandUnlocked(
+            "Runtime.evaluate",
+            params.items,
+        );
     }
 
     pub fn evaluate(
         self: *Client,
         expression: []const u8,
     ) !std.json.Parsed(std.json.Value) {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        return try self.evaluateUnlocked(expression);
+        self.mutex.lockUncancelable(
+            self.io,
+        );
+        defer self.mutex.unlock(
+            self.io,
+        );
+
+        return try self.evaluateUnlocked(
+            expression,
+        );
     }
 
     pub fn evaluateString(
         self: *Client,
         expression: []const u8,
     ) !?[]u8 {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
+        self.mutex.lockUncancelable(
+            self.io,
+        );
+        defer self.mutex.unlock(
+            self.io,
+        );
 
-        var response = try self.evaluateUnlocked(expression);
+        var response =
+            try self.evaluateUnlocked(
+                expression,
+            );
+
         defer response.deinit();
 
-        try checkError(&response);
+        try checkError(
+            &response,
+        );
 
-        const remote = getRemoteObject(&response) orelse return null;
-        const value = remote.object.get("value") orelse return null;
-        if (value != .string) return null;
-        return try allocator.dupe(u8, value.string);
+        const remote =
+            getRemoteObject(
+                &response,
+            ) orelse
+            return null;
+
+        const value =
+            remote.object.get(
+                "value",
+            ) orelse
+            return null;
+
+        if (value != .string)
+            return null;
+
+        return try allocator.dupe(
+            u8,
+            value.string,
+        );
     }
 
     pub fn evaluateBool(
         self: *Client,
         expression: []const u8,
     ) !bool {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
+        self.mutex.lockUncancelable(
+            self.io,
+        );
+        defer self.mutex.unlock(
+            self.io,
+        );
 
-        var response = try self.evaluateUnlocked(expression);
+        var response =
+            try self.evaluateUnlocked(
+                expression,
+            );
+
         defer response.deinit();
 
-        try checkError(&response);
+        try checkError(
+            &response,
+        );
 
-        const remote = getRemoteObject(&response) orelse return false;
-        const value = remote.object.get("value") orelse return false;
+        const remote =
+            getRemoteObject(
+                &response,
+            ) orelse
+            return false;
+
+        const value =
+            remote.object.get(
+                "value",
+            ) orelse
+            return false;
+
         return switch (value) {
             .bool => |v| v,
             else => false,
@@ -392,86 +758,186 @@ pub const Client = struct {
         self: *Client,
         source: []const u8,
     ) !void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-
-        var params: std.ArrayList(u8) = .empty;
-        defer params.deinit(allocator);
-
-        try params.appendSlice(allocator, "{\"source\":");
-        try appendJsonString(&params, source);
-        try params.append(allocator, '}');
-
-        var response = try self.commandUnlocked(
-            "Page.addScriptToEvaluateOnNewDocument",
-            params.items,
+        self.mutex.lockUncancelable(
+            self.io,
         );
+        defer self.mutex.unlock(
+            self.io,
+        );
+
+        var params: std.ArrayList(u8) =
+            .empty;
+
+        defer params.deinit(
+            allocator,
+        );
+
+        try params.appendSlice(
+            allocator,
+            "{\"source\":",
+        );
+
+        try appendJsonString(
+            &params,
+            source,
+        );
+
+        try params.append(
+            allocator,
+            '}',
+        );
+
+        var response =
+            try self.commandUnlocked(
+                "Page.addScriptToEvaluateOnNewDocument",
+                params.items,
+            );
+
         defer response.deinit();
 
-        try checkError(&response);
+        try checkError(
+            &response,
+        );
     }
 
-    pub fn bringToFront(self: *Client) !void {
-        var response = try self.command("Page.bringToFront", "{}");
+    pub fn bringToFront(
+        self: *Client,
+    ) !void {
+        var response =
+            try self.command(
+                "Page.bringToFront",
+                "{}",
+            );
+
         defer response.deinit();
-        try checkError(&response);
+
+        try checkError(
+            &response,
+        );
     }
 
-    pub fn closeBrowser(self: *Client) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
+    pub fn closeBrowser(
+        self: *Client,
+    ) void {
+        self.mutex.lockUncancelable(
+            self.io,
+        );
+        defer self.mutex.unlock(
+            self.io,
+        );
 
-        const id = self.next_id;
+        const id =
+            self.next_id;
+
         self.next_id += 1;
 
-        var request: std.ArrayList(u8) = .empty;
-        defer request.deinit(allocator);
+        var request: std.ArrayList(u8) =
+            .empty;
 
-        request.appendSlice(allocator, "{\"id\":") catch return;
-        var id_buf: [32]u8 = undefined;
-        const id_text = std.fmt.bufPrint(&id_buf, "{d}", .{id}) catch return;
-        request.appendSlice(allocator, id_text) catch return;
+        defer request.deinit(
+            allocator,
+        );
+
         request.appendSlice(
             allocator,
-            ",\"method\":\"Browser.close\",\"params\":{}}",
-        ) catch return;
+            "{\"id\":",
+        ) catch
+            return;
 
-        self.sendTextUnlocked(request.items) catch {};
+        var id_buf: [32]u8 =
+            undefined;
+
+        const id_text =
+            std.fmt.bufPrint(
+                &id_buf,
+                "{d}",
+                .{id},
+            ) catch
+                return;
+
+        request.appendSlice(
+            allocator,
+            id_text,
+        ) catch
+            return;
+
+        request.appendSlice(
+            allocator,
+            ",\"method\":\"Browser.close\"," ++ "\"params\":{}}",
+        ) catch
+            return;
+
+        self.sendTextUnlocked(
+            request.items,
+        ) catch {};
     }
 };
 
 pub fn checkError(
-    response: *const std.json.Parsed(std.json.Value),
+    response: *const std.json.Parsed(
+        std.json.Value,
+    ),
 ) !void {
     if (response.value != .object)
         return error.InvalidCdpResponse;
 
-    if (response.value.object.get("error")) |value| {
-        std.debug.print("[cdp] protocol error: {any}\n", .{value});
+    if (response.value.object.get(
+        "error",
+    )) |value| {
+        std.debug.print(
+            "[cdp] protocol error: {any}\n",
+            .{value},
+        );
+
         return error.CdpProtocolError;
     }
 
-    const outer = response.value.object.get("result") orelse return;
-    if (outer == .object) {
-        if (outer.object.get("exceptionDetails")) |details| {
-            std.debug.print("[cdp] JavaScript exception: {any}\n", .{details});
-            return error.JavaScriptException;
-        }
+    const outer =
+        response.value.object.get(
+            "result",
+        ) orelse
+        return;
+
+    if (outer != .object)
+        return;
+
+    if (outer.object.get(
+        "exceptionDetails",
+    )) |details| {
+        std.debug.print(
+            "[cdp] JavaScript exception: {any}\n",
+            .{details},
+        );
+
+        return error.JavaScriptException;
     }
 }
 
 fn getRemoteObject(
-    response: *const std.json.Parsed(std.json.Value),
+    response: *const std.json.Parsed(
+        std.json.Value,
+    ),
 ) ?std.json.Value {
-    if (response.value != .object) return null;
+    if (response.value != .object)
+        return null;
 
-    const outer = response.value.object.get("result") orelse return null;
-    if (outer != .object) return null;
+    const outer =
+        response.value.object.get(
+            "result",
+        ) orelse
+        return null;
 
-    if (outer.object.get("exceptionDetails") != null) return null;
+    if (outer != .object)
+        return null;
 
-    const remote = outer.object.get("result") orelse return null;
-    if (remote != .object) return null;
+    const remote =
+        outer.object.get(
+            "result",
+        ) orelse
+        return null;
+
+    if (remote != .object)
+        return null;
 
     return remote;
 }

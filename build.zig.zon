@@ -8,6 +8,10 @@
             .url = "git+https://github.com/luxluth/goose.git#6e91762f8f0244295eff62071e37b7460bfc41ae",
             .hash = "goose-2.0.0-e9MzMMUaAwDs4vGzB15VSOtkL_7tmfcfN8GoEiVbUbVZ",
         },
+        .websocket = .{
+            .url = "git+https://github.com/karlseguin/websocket.zig#efa879736bd438bea8b86a91f220ba408de57273",
+            .hash = "websocket-0.1.0-ZPISdWoTBQA8iviFsepUZiKrmT-oEyc-BwfbVzYwu7LO",
+        },
     },
     .paths = .{
         "build.zig",
